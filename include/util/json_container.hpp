@@ -37,6 +37,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <tuple>
 
 namespace osrm
 {
@@ -123,6 +124,7 @@ using Value = mapbox::util::variant<String,
                                     Number,
                                     mapbox::util::recursive_wrapper<Object>,
                                     mapbox::util::recursive_wrapper<Array>,
+                                    std::tuple<float, float>,
                                     True,
                                     False,
                                     Null>;

@@ -28,6 +28,7 @@
 
 #include <iterator>
 #include <vector>
+#include <tuple>
 
 namespace osrm
 {
@@ -323,6 +324,16 @@ class RouteAPI : public BaseAPI
                         nodes.values.push_back(static_cast<std::uint64_t>(node_id));
                     }
                     annotation.values["nodes"] = std::move(nodes);
+
+                    // new stuff: add Lat/Lon coords to annotation
+                    util::json::Array coords;
+                    coords.values.reserve(leg_geometry.locations.size());
+                    for (const auto loc : leg_geometry.locations)
+                    {
+                        std::tuple<double, double> coord_tup (static_cast<double>(util::toFloating(loc.lat)), static_cast<double>(util::toFloating(loc.lon)));
+                        coords.values.push_back(coord_tup);
+                    }
+                    annotation.values["coordinates"] = std::move(coords);
                 }
                 // Add any supporting metadata, if needed
                 if (requested_annotations & RouteParameters::AnnotationsType::Datasources)
