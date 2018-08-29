@@ -38,6 +38,11 @@ struct Renderer
         out << number.value;
     }
 
+    void operator()(const std::tuple<double, double> &tup) const
+    {
+        out.precision(10);
+        out << "[" << std::get<0>(tup) << ", " << std::get<1>(tup) << "]";
+    }
     void operator()(const Object &object) const
     {
         out << "{";
@@ -127,6 +132,17 @@ struct ArrayRenderer
         }
         out.push_back(']');
     }
+
+    void operator()(const std::tuple<double, double> &tup) const
+    {
+        out.push_back('[');
+        auto ren = ArrayRenderer(out);
+        ren(Number(std::get<0>(tup)));
+        out.push_back(',');
+        ren(Number(std::get<1>(tup)));
+        out.push_back(']');
+    }
+
 
     void operator()(const True &) const
     {
