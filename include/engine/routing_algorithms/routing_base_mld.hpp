@@ -97,6 +97,7 @@ inline LevelID getNodeQueryLevel(const MultiLevelPartition &partition,
                                  const std::vector<std::size_t> &phantom_indices)
 {
     auto min_level = [&partition, node](const PhantomNode &phantom_node) {
+
         const auto &forward_segment = phantom_node.forward_segment_id;
         const auto forward_level =
             forward_segment.enabled ? partition.GetHighestDifferentLevel(node, forward_segment.id)
@@ -119,7 +120,7 @@ inline LevelID getNodeQueryLevel(const MultiLevelPartition &partition,
     }
     return result;
 }
-} // namespace
+}
 
 // Heaps only record for each node its predecessor ("parent") on the shortest path.
 // For re-constructing the actual path we need to trace back all parent "pointers".
@@ -390,27 +391,21 @@ UnpackedPath search(SearchEngineData<Algorithm> &engine_working_data,
                     EdgeWeight weight_upper_bound,
                     Args... args)
 {
-    if (forward_heap.Empty() && reverse_heap.Empty())
+    if (forward_heap.Empty() || reverse_heap.Empty())
     {
         return std::make_tuple(INVALID_EDGE_WEIGHT, std::vector<NodeID>(), std::vector<EdgeID>());
     }
 
     const auto &partition = facade.GetMultiLevelPartition();
 
-    BOOST_ASSERT(forward_heap.Empty() || forward_heap.MinKey() < INVALID_EDGE_WEIGHT);
-    BOOST_ASSERT(reverse_heap.Empty() || reverse_heap.MinKey() < INVALID_EDGE_WEIGHT);
+    BOOST_ASSERT(!forward_heap.Empty() && forward_heap.MinKey() < INVALID_EDGE_WEIGHT);
+    BOOST_ASSERT(!reverse_heap.Empty() && reverse_heap.MinKey() < INVALID_EDGE_WEIGHT);
 
     // run two-Target Dijkstra routing step.
     NodeID middle = SPECIAL_NODEID;
     EdgeWeight weight = weight_upper_bound;
-
-    EdgeWeight forward_heap_min = 0;
-    if (!forward_heap.Empty())
-        forward_heap_min = forward_heap.MinKey();
-    EdgeWeight reverse_heap_min = 0;
-    if (!reverse_heap.Empty())
-        reverse_heap_min = reverse_heap.MinKey();
-
+    EdgeWeight forward_heap_min = forward_heap.MinKey();
+    EdgeWeight reverse_heap_min = reverse_heap.MinKey();
     while (forward_heap.Size() + reverse_heap.Size() > 0 &&
            forward_heap_min + reverse_heap_min < weight)
     {
@@ -514,90 +509,6 @@ UnpackedPath search(SearchEngineData<Algorithm> &engine_working_data,
     return std::make_tuple(weight, std::move(unpacked_nodes), std::move(unpacked_edges));
 }
 
-// With (s, middle, t) we trace back the paths middle -> s and middle -> t.
-// This gives us a packed path (node ids) from the base graph around s and t,
-// and overlay node ids otherwise. We then have to unpack the overlay clique
-// edges by recursively descending unpacking the path down to the base graph.
-
-using UnpackedNodes = std::vector<NodeID>;
-using UnpackedEdges = std::vector<EdgeID>;
-using UnpackedPath = std::tuple<EdgeWeight, UnpackedNodes, UnpackedEdges>;
-
-template <typename Algorithm, typename... Args>
-UnpackedPath
-unpackPathAndCalculateDistance(SearchEngineData<Algorithm> &engine_working_data,
-                               const DataFacade<Algorithm> &facade,
-                               typename SearchEngineData<Algorithm>::QueryHeap &forward_heap,
-                               typename SearchEngineData<Algorithm>::QueryHeap &reverse_heap,
-                               const bool force_loop_forward,
-                               const bool force_loop_reverse,
-                               EdgeWeight weight_upper_bound,
-                               PackedPath packed_path,
-                               NodeID middle,
-                               Args... args)
-{
-    EdgeWeight weight = weight_upper_bound;
-    const auto &partition = facade.GetMultiLevelPartition();
-    const NodeID source_node = !packed_path.empty() ? std::get<0>(packed_path.front()) : middle;
-
-    // Unpack path
-    std::vector<NodeID> unpacked_nodes;
-    std::vector<EdgeID> unpacked_edges;
-    unpacked_nodes.reserve(packed_path.size());
-    unpacked_edges.reserve(packed_path.size());
-
-    unpacked_nodes.push_back(source_node);
-
-    for (auto const &packed_edge : packed_path)
-    {
-        NodeID source, target;
-        bool overlay_edge;
-        std::tie(source, target, overlay_edge) = packed_edge;
-        if (!overlay_edge)
-        { // a base graph edge
-            unpacked_nodes.push_back(target);
-            unpacked_edges.push_back(facade.FindEdge(source, target));
-        }
-        else
-        { // an overlay graph edge
-            LevelID level = getNodeQueryLevel(partition, source, args...);
-            CellID parent_cell_id = partition.GetCell(level, source);
-            BOOST_ASSERT(parent_cell_id == partition.GetCell(level, target));
-
-            LevelID sublevel = level - 1;
-
-            // Here heaps can be reused, let's go deeper!
-            forward_heap.Clear();
-            reverse_heap.Clear();
-            forward_heap.Insert(source, 0, {source});
-            reverse_heap.Insert(target, 0, {target});
-
-            // TODO: when structured bindings will be allowed change to
-            // auto [subpath_weight, subpath_source, subpath_target, subpath] = ...
-            EdgeWeight subpath_weight;
-            std::vector<NodeID> subpath_nodes;
-            std::vector<EdgeID> subpath_edges;
-            std::tie(subpath_weight, subpath_nodes, subpath_edges) = search(engine_working_data,
-                                                                            facade,
-                                                                            forward_heap,
-                                                                            reverse_heap,
-                                                                            force_loop_forward,
-                                                                            force_loop_reverse,
-                                                                            weight_upper_bound,
-                                                                            sublevel,
-                                                                            parent_cell_id);
-            BOOST_ASSERT(!subpath_edges.empty());
-            BOOST_ASSERT(subpath_nodes.size() > 1);
-            BOOST_ASSERT(subpath_nodes.front() == source);
-            BOOST_ASSERT(subpath_nodes.back() == target);
-            unpacked_nodes.insert(
-                unpacked_nodes.end(), std::next(subpath_nodes.begin()), subpath_nodes.end());
-            unpacked_edges.insert(unpacked_edges.end(), subpath_edges.begin(), subpath_edges.end());
-        }
-    }
-    return std::make_tuple(weight, std::move(unpacked_nodes), std::move(unpacked_edges));
-}
-
 // Alias to be compatible with the CH-based search
 template <typename Algorithm>
 inline void search(SearchEngineData<Algorithm> &engine_working_data,
@@ -662,7 +573,11 @@ double getNetworkDistance(SearchEngineData<Algorithm> &engine_working_data,
                           const PhantomNode &target_phantom,
                           EdgeWeight weight_upper_bound = INVALID_EDGE_WEIGHT)
 {
+    forward_heap.Clear();
+    reverse_heap.Clear();
+
     const PhantomNodes phantom_nodes{source_phantom, target_phantom};
+    insertNodesInHeaps(forward_heap, reverse_heap, phantom_nodes);
 
     EdgeWeight weight = INVALID_EDGE_WEIGHT;
     std::vector<NodeID> unpacked_nodes;
@@ -681,22 +596,11 @@ double getNetworkDistance(SearchEngineData<Algorithm> &engine_working_data,
         return std::numeric_limits<double>::max();
     }
 
-    EdgeDistance distance = 0;
+    std::vector<PathData> unpacked_path;
 
-    if (!unpacked_nodes.empty())
-    {
-        distance = std::accumulate(unpacked_nodes.begin(),
-                                   std::prev(unpacked_nodes.end()),
-                                   EdgeDistance{0},
-                                   [&](const EdgeDistance distance, const auto node_id) {
-                                       return distance + computeEdgeDistance(facade, node_id);
-                                   });
-    }
+    annotatePath(facade, phantom_nodes, unpacked_nodes, unpacked_edges, unpacked_path);
 
-    distance = adjustPathDistanceToPhantomNodes(
-        unpacked_nodes, phantom_nodes.source_phantom, phantom_nodes.target_phantom, distance);
-
-    return distance;
+    return getPathDistance(facade, unpacked_path, source_phantom, target_phantom);
 }
 
 } // namespace mld

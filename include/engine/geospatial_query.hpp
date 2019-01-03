@@ -53,13 +53,15 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
     std::vector<PhantomNodeWithDistance>
     NearestPhantomNodesInRange(const util::Coordinate input_coordinate,
                                const double max_distance,
-                               const Approach approach) const
+                               const Approach approach,
+                               const bool use_all_edges) const
     {
         auto results = rtree.Nearest(
             input_coordinate,
-            [this, approach, &input_coordinate](const CandidateSegment &segment) {
-                return boolPairAnd(boolPairAnd(HasValidEdge(segment), CheckSegmentExclude(segment)),
-                                   CheckApproach(input_coordinate, segment, approach));
+            [this, approach, &input_coordinate, use_all_edges](const CandidateSegment &segment) {
+                return boolPairAnd(
+                    boolPairAnd(HasValidEdge(segment, use_all_edges), CheckSegmentExclude(segment)),
+                    CheckApproach(input_coordinate, segment, approach));
             },
             [this, max_distance, input_coordinate](const std::size_t,
                                                    const CandidateSegment &segment) {
@@ -76,15 +78,17 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
                                const double max_distance,
                                const int bearing,
                                const int bearing_range,
-                               const Approach approach) const
+                               const Approach approach,
+                               const bool use_all_edges) const
     {
         auto results = rtree.Nearest(
             input_coordinate,
-            [this, approach, &input_coordinate, bearing, bearing_range](
+            [this, approach, &input_coordinate, bearing, bearing_range, use_all_edges](
                 const CandidateSegment &segment) {
                 auto use_direction =
                     boolPairAnd(CheckSegmentBearing(segment, bearing, bearing_range),
-                                boolPairAnd(HasValidEdge(segment), CheckSegmentExclude(segment)));
+                                boolPairAnd(HasValidEdge(segment, use_all_edges),
+                                            CheckSegmentExclude(segment)));
                 use_direction =
                     boolPairAnd(use_direction, CheckApproach(input_coordinate, segment, approach));
                 return use_direction;
@@ -449,7 +453,6 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
         const auto reverse_durations = datafacade.GetUncompressedReverseDurations(geometry_id);
 
         const auto forward_geometry = datafacade.GetUncompressedForwardGeometry(geometry_id);
-        const auto reverse_geometry = datafacade.GetUncompressedReverseGeometry(geometry_id);
 
         const auto forward_weight_offset =
             std::accumulate(forward_weights.begin(),
@@ -462,6 +465,7 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
                             EdgeDuration{0});
 
         EdgeDistance forward_distance_offset = 0;
+        // Sum up the distance from the start to the fwd_segment_position
         for (auto current = forward_geometry.begin();
              current < forward_geometry.begin() + data.fwd_segment_position;
              ++current)
@@ -480,19 +484,20 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
             datafacade.GetCoordinateOfNode(forward_geometry(data.fwd_segment_position)),
             point_on_segment);
 
-        const auto rev_segment_position = reverse_weights.size() - data.fwd_segment_position - 1;
-
-        const auto reverse_weight_offset = std::accumulate(
-            reverse_weights.begin(), reverse_weights.begin() + rev_segment_position, EdgeWeight{0});
+        const auto reverse_weight_offset =
+            std::accumulate(reverse_weights.begin(),
+                            reverse_weights.end() - data.fwd_segment_position - 1,
+                            EdgeWeight{0});
 
         const auto reverse_duration_offset =
             std::accumulate(reverse_durations.begin(),
-                            reverse_durations.begin() + rev_segment_position,
+                            reverse_durations.end() - data.fwd_segment_position - 1,
                             EdgeDuration{0});
 
         EdgeDistance reverse_distance_offset = 0;
-        for (auto current = reverse_geometry.begin();
-             current < reverse_geometry.begin() + rev_segment_position;
+        // Sum up the distance from just after the fwd_segment_position to the end
+        for (auto current = forward_geometry.begin() + data.fwd_segment_position + 1;
+             current != std::prev(forward_geometry.end());
              ++current)
         {
             reverse_distance_offset += util::coordinate_calculation::fccApproximateDistance(
@@ -500,11 +505,13 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
                 datafacade.GetCoordinateOfNode(*std::next(current)));
         }
 
-        EdgeWeight reverse_weight = reverse_weights[rev_segment_position];
-        EdgeDuration reverse_duration = reverse_durations[rev_segment_position];
+        EdgeWeight reverse_weight =
+            reverse_weights[reverse_weights.size() - data.fwd_segment_position - 1];
+        EdgeDuration reverse_duration =
+            reverse_durations[reverse_durations.size() - data.fwd_segment_position - 1];
         EdgeDistance reverse_distance = util::coordinate_calculation::fccApproximateDistance(
             point_on_segment,
-            datafacade.GetCoordinateOfNode(reverse_geometry(rev_segment_position)));
+            datafacade.GetCoordinateOfNode(forward_geometry(data.fwd_segment_position + 1)));
 
         ratio = std::min(1.0, std::max(0.0, ratio));
         if (data.forward_segment_id.id != SPECIAL_SEGMENTID)
@@ -627,7 +634,8 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
      * which means that this edge is not currently traversible.  If this is the case,
      * then we shouldn't snap to this edge.
      */
-    std::pair<bool, bool> HasValidEdge(const CandidateSegment &segment) const
+    std::pair<bool, bool> HasValidEdge(const CandidateSegment &segment,
+                                       const bool use_all_edges = false) const
     {
 
         bool forward_edge_valid = false;
@@ -650,6 +658,9 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
         {
             reverse_edge_valid = data.reverse_segment_id.enabled;
         }
+
+        forward_edge_valid = forward_edge_valid && (data.is_startpoint || use_all_edges);
+        reverse_edge_valid = reverse_edge_valid && (data.is_startpoint || use_all_edges);
 
         return std::make_pair(forward_edge_valid, reverse_edge_valid);
     }
@@ -692,7 +703,7 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
     const CoordinateList &coordinates;
     DataFacadeT &datafacade;
 };
-} // namespace engine
-} // namespace osrm
+}
+}
 
 #endif
