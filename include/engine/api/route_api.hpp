@@ -328,13 +328,11 @@ class RouteAPI : public BaseAPI
                     // new stuff: add Lat/Lon coords to annotation
                     util::json::Array coords;
                     coords.values.reserve(leg_geometry.locations.size());
-                    std::cout << "Locations:\n";
                     for (const auto loc : leg_geometry.locations)
                     {
                         auto float_coord = util::FloatCoordinate(loc);
-                        const std::tuple<double, double> coord_tup (static_cast<double>(float_coord.lat), static_cast<double>(float_coord.lon));
+                        const std::tuple<double, double> coord_tup (static_cast<double>(float_coord.lon), static_cast<double>(float_coord.lat));
                         coords.values.push_back(coord_tup);
-                        std::cout << float_coord.lat << std::endl;
                     }
 
                     annotation.values["coordinates"] = std::move(coords);
